@@ -52,6 +52,7 @@ _VISIBLE_COMMANDS = [
     "notes",
     "skills",
     "runs",
+    "cost",
     "ui",
     "eval",
     "wait",
@@ -112,6 +113,7 @@ Inspecting Results:
   notes           Browse shared notes
   skills          Browse shared skills
   runs            List runs (active only; --all for stopped)
+  cost            Token usage and estimated cost for a run
 
 Dashboard:
   ui              Launch the web dashboard
@@ -318,6 +320,39 @@ Run 'coral <command> --help' for details on any command."""
     )
     p_runs.add_argument("--verbose", "-v", action="store_true", help="Show full paths")
 
+    p_cost = sub.add_parser(
+        "cost",
+        help="Token usage and estimated cost for a run",
+        description=(
+            "Aggregate token usage from the LiteLLM gateway log and apply\n"
+            "a pricing table to estimate USD cost. Requires the gateway to\n"
+            "have been enabled during the run (agents.gateway.enabled=true)."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  coral cost                           Top-level summary\n"
+            "  coral cost --by-agent                Break down by agent\n"
+            "  coral cost --pricing prices.yaml     Override default rates\n"
+            "  coral cost --json                    Machine-readable output\n"
+            "\n"
+            "Pricing YAML format (per-million-token USD):\n"
+            "  claude-sonnet-4-6:\n"
+            "    input: 3.0\n"
+            "    output: 15.0\n"
+            "    cache_read: 0.3\n"
+            "    cache_write: 3.75"
+        ),
+        formatter_class=_CommandHelpFormatter,
+    )
+    _add_run_args(p_cost)
+    p_cost.add_argument(
+        "--pricing", help="Path to YAML file with per-model price overrides"
+    )
+    p_cost.add_argument(
+        "--by-agent", action="store_true", help="Break down usage by agent within each model"
+    )
+    p_cost.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
     # --- Dashboard ---
 
     p_ui = sub.add_parser(
@@ -468,6 +503,7 @@ Run 'coral <command> --help' for details on any command."""
 
     # Lazy imports for fast startup
     from coral.cli.author import cmd_init, cmd_validate
+    from coral.cli.cost import cmd_cost
     from coral.cli.eval import cmd_checkout, cmd_diff, cmd_eval, cmd_revert, cmd_wait
     from coral.cli.heartbeat import cmd_heartbeat
     from coral.cli.query import cmd_log, cmd_notes, cmd_runs, cmd_show, cmd_skills
@@ -490,6 +526,7 @@ Run 'coral <command> --help' for details on any command."""
         "notes": cmd_notes,
         "skills": cmd_skills,
         "runs": cmd_runs,
+        "cost": cmd_cost,
         "init": cmd_init,
         "validate": cmd_validate,
         "ui": cmd_ui,

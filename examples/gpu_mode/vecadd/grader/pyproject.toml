@@ -1,0 +1,23 @@
+[project]
+name = "vecadd-grader"
+version = "0.1.0"
+description = "CORAL grader for the GPU Mode vecadd Triton kernel task."
+requires-python = ">=3.11"
+dependencies = [
+    "coral",
+    "torch>=2.2.0",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# Required for GPUMODE_USE_MODAL=true (cloud GPU evaluation).
+modal = ["modal"]
+# Required for local GPU evaluation (CUDA only).
+gpu = ["triton>=3.0.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vecadd_grader"]

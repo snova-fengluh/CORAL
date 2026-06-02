@@ -1,0 +1,57 @@
+task:
+  name: "GPU Mode: Vecadd"
+  description: |
+    Optimize a Triton kernel for element-wise float16 vector addition: C = A + B,
+    where A and B are 2D float16 tensors on CUDA.
+
+    Your program file `initial_program.py` must define `custom_kernel(data)` where
+    `data = (a, b)` are two float16 CUDA tensors of the same shape, and the function
+    returns the element-wise sum (also float16). Pure PyTorch is allowed, but at
+    least part of the implementation should use Triton (`@triton.jit`).
+
+    Correctness is checked against the PyTorch reference (a + b) with rtol/atol=1e-3.
+    The kernel is benchmarked on shapes 1024², 2048², 4096², 8192².
+
+    Score = SCORE_SCALE / geom_mean_runtime_us (SCORE_SCALE = 3000.0), so higher is
+    faster.
+
+  tips: |
+    - Eval timeout is 600s.
+    - Local mode requires CUDA + Triton. Mac users: set environment variables
+        GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H100
+      to run the eval on Modal cloud GPUs (Modal credentials required).
+    - Output dtype MUST be float16. Output shape must match input shape.
+    - Consider: BLOCK_SIZE tuning, @triton.autotune, vectorized loads, grid sizing
+      for occupancy, memory coalescing on contiguous data.
+
+grader:
+  entrypoint: "vecadd_grader.grader:Grader"
+  setup:
+    # Add `[gpu]` if running locally on a CUDA box; add `[modal]` if using Modal cloud.
+    - "uv pip install -e ./grader"
+  timeout: 600
+  direction: maximize
+  args:
+    program_file: "initial_program.py"
+
+agents:
+  count: 1
+  runtime: claude_code
+  model: claude-sonnet-4-6
+  gateway:
+    enabled: true
+    port: 4000  # to be consistent with ./seed/opencode.json
+    config: "./litellm_config.yaml"
+
+workspace:
+  results_dir: "./results"
+  repo_path: "./examples/gpu_mode/vecadd/seed"
+  setup:
+    # The grader handles correctness + benchmarking itself, so the agent's worktree
+    # only needs torch + triton if the agent wants to test their kernel manually.
+    - "uv pip install torch numpy"
+
+run:
+  verbose: false
+  ui: false
+  session: tmux

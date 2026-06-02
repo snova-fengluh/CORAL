@@ -1,0 +1,54 @@
+task:
+  name: "GPU Mode: Grayscale"
+  description: |
+    Optimize a Triton kernel for RGB → grayscale conversion using the luminance
+    formula: Y = 0.2989 * R + 0.5870 * G + 0.1140 * B.
+
+    Your program file `initial_program.py` must define `custom_kernel(data)` where
+    `data = (rgb, output)`:
+      - rgb:    (H, W, 3) float32 CUDA tensor (contiguous)
+      - output: (H, W)    float32 CUDA tensor (pre-allocated, contiguous)
+    Write the grayscale result in-place into `output` and return it.
+
+    Correctness is checked against the PyTorch reference at rtol/atol=1e-4.
+    Benchmark shapes: 1024², 2048², 4096², 8192² (always square images).
+
+    Score = SCORE_SCALE / geom_mean_runtime_us (SCORE_SCALE = 3000.0).
+
+  tips: |
+    - Eval timeout is 600s.
+    - Local mode requires CUDA + Triton; otherwise use Modal:
+        GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H100
+    - Memory coalescing matters: input is (H, W, 3), so per-pixel channels are
+      stride-3 apart in the inner dim. Consider vectorized loads.
+    - At least part of the kernel should run in Triton; pure PyTorch submissions
+      pass correctness but get the slowest score.
+
+grader:
+  entrypoint: "grayscale_grader.grader:Grader"
+  setup:
+    - "uv pip install -e ./grader"
+  timeout: 600
+  direction: maximize
+  args:
+    program_file: "initial_program.py"
+
+agents:
+  count: 1
+  runtime: claude_code
+  model: claude-sonnet-4-6
+  gateway:
+    enabled: true
+    port: 4000  # to be consistent with ./seed/opencode.json
+    config: "./litellm_config.yaml"
+
+workspace:
+  results_dir: "./results"
+  repo_path: "./examples/gpu_mode/grayscale/seed"
+  setup:
+    - "uv pip install torch numpy"
+
+run:
+  verbose: false
+  ui: false
+  session: tmux

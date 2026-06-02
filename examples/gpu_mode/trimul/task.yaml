@@ -1,0 +1,59 @@
+task:
+  name: "GPU Mode: TriMul"
+  description: |
+    Optimize a Triton kernel for the Triangle Multiplicative Update (TriMul)
+    operator — the core operation in AlphaFold3, Chai, and Protenix protein
+    structure models.
+
+    Your program file `initial_program.py` must define `custom_kernel(data)` where
+    `data = (input_tensor, mask, weights, config)`:
+      - input_tensor: (bs, seqlen, seqlen, dim) float32 CUDA tensor
+      - mask:         (bs, seqlen, seqlen) float32 CUDA tensor (0/1)
+      - weights:      dict of named weights (LayerNorm, projections, gates, output)
+      - config:       dict with "dim" and "hidden_dim"
+    Return the (bs, seqlen, seqlen, dim) float32 output of the module.
+
+    Correctness is checked against the PyTorch reference at rtol/atol=2e-2.
+    The reference disables TF32 (allow_tf32=False on cuda.matmul and cudnn).
+
+    Score = SCORE_SCALE / geom_mean_runtime_us (SCORE_SCALE = 3000.0).
+    Benchmarks span seqlen ∈ {256, 512, 768, 1024} and both normal/cauchy
+    input distributions.
+
+  tips: |
+    - Eval timeout is 600s.
+    - Local mode requires CUDA + Triton; otherwise:
+        GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H100
+    - The reference computes the einsum '...ikd,...jkd->...ijd' in bfloat16
+      internally — you have some numerical slack (rtol/atol=2e-2).
+    - The TriMul module is large; fusing LayerNorm/projection/gate steps and
+      using the bfloat16 einsum is where most speedup lives.
+
+grader:
+  entrypoint: "trimul_grader.grader:Grader"
+  setup:
+    - "uv pip install -e ./grader"
+  timeout: 600
+  direction: maximize
+  args:
+    program_file: "initial_program.py"
+
+agents:
+  count: 1
+  runtime: claude_code
+  model: claude-sonnet-4-6
+  gateway:
+    enabled: true
+    port: 4000  # to be consistent with ./seed/opencode.json
+    config: "./litellm_config.yaml"
+
+workspace:
+  results_dir: "./results"
+  repo_path: "./examples/gpu_mode/trimul/seed"
+  setup:
+    - "uv pip install torch numpy"
+
+run:
+  verbose: false
+  ui: false
+  session: tmux

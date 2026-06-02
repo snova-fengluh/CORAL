@@ -1,0 +1,62 @@
+task:
+  name: "GPU Mode: MLA Decode"
+  description: |
+    Optimize a Triton kernel for the Multi-head Latent Attention (MLA) decode
+    operator from DeepSeek-V2/V3 — single-step decode with a compressed KV
+    cache (LoRA projections + RoPE).
+
+    Your program file `initial_program.py` must define `custom_kernel(data)` where
+    `data = (config, x, kv_cache)`:
+      - config:   reference.Config dataclass with model dims and projection weights
+      - x:        (bs, 1, dim) bfloat16 CUDA tensor (the new decode token)
+      - kv_cache: reference.KVCache module with prefill already loaded
+    Return `(output, kv_cache.data)`:
+      - output:        (bs, 1, dim) bfloat16 CUDA tensor
+      - kv_cache.data: updated KV cache buffer
+
+    `reference.py` (KVCache, Config, RoPE, MLA reference) is mirrored into
+    `seed/` so your program can import it: `from reference import KVCache, Config`.
+    Do not modify reference.py; only edit `initial_program.py`.
+
+    Correctness is checked at rtol/atol=2e-2 in bfloat16.
+    Score = SCORE_SCALE / geom_mean_runtime_us (SCORE_SCALE = 3000.0).
+    Benchmarks: batchsize=128, dim=7168, dq=1536, prefill ∈ {4096, 6144}.
+
+  tips: |
+    - Eval timeout is 600s.
+    - This benchmark needs an H200 (141 GB) — H100 (80 GB) doesn't fit. Use:
+        GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H200
+      for cloud GPU evaluation.
+    - The shared eval uses wall-clock timing + torch.no_grad() + 1% rel error
+      (different from the other GPU Mode tasks).
+    - Big wins typically come from fusing softmax + matmul + RoPE rather than
+      adding new compute.
+
+grader:
+  entrypoint: "mla_decode_grader.grader:Grader"
+  setup:
+    - "uv pip install -e ./grader"
+  timeout: 600
+  direction: maximize
+  args:
+    program_file: "initial_program.py"
+
+agents:
+  count: 1
+  runtime: claude_code
+  model: claude-sonnet-4-6
+  gateway:
+    enabled: true
+    port: 4000  # to be consistent with ./seed/opencode.json
+    config: "./litellm_config.yaml"
+
+workspace:
+  results_dir: "./results"
+  repo_path: "./examples/gpu_mode/mla_decode/seed"
+  setup:
+    - "uv pip install torch numpy"
+
+run:
+  verbose: false
+  ui: false
+  session: tmux
