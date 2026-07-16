@@ -53,7 +53,10 @@ agents:
   count: 1
   runtime: claude_code
   model: claude-sonnet-4-6
-  max_turns: 200
+  gateway:
+    enabled: true
+    port: 4000  # to be consistent with ./seed/opencode.json
+    config: "./litellm_config.yaml"
 workspace:
   results_dir: ./results
   repo_path: ./examples/frontier_cs_algo/0/seed

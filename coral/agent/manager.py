@@ -659,6 +659,62 @@ class AgentManager:
                 logger.warning(f"Failed to read attempt {newest}: {e}")
         return None
 
+    def _budget_exceeded(self) -> bool:
+        """Return True if the run's cost has reached the configured budget.
+
+        Reads the cumulative cost from the gateway log via the same helper
+        `coral cost` uses. Returns False (no enforcement) when no budget is
+        set or cost can't be determined (e.g. gateway disabled / no usage yet).
+        """
+        budget = self.config.run.budget
+        if budget <= 0:
+            return False
+        assert self.paths is not None
+
+        from coral.cli.cost import compute_run_cost
+
+        cost = compute_run_cost(self.paths.coral_dir)
+        if cost is None:
+            return False
+        if cost >= budget:
+            logger.warning(
+                f"Budget reached: cost ${cost:,.4f} >= budget ${budget:,.4f}. "
+                f"Stopping run."
+            )
+            if self.verbose:
+                print(
+                    f"\n[coral] Budget reached: cost ${cost:,.4f} >= "
+                    f"budget ${budget:,.4f}. Stopping all agents."
+                )
+            return True
+        return False
+
+    def _runtime_exceeded(self) -> bool:
+        """Return True if the run has been running longer than the time cap.
+
+        Measures wall-clock elapsed since this session started (``_start_time``,
+        set by both ``start_all`` and ``resume_all``). Returns False (no
+        enforcement) when no cap is set or the start time is unknown. Note the
+        clock restarts on resume, so the cap applies per session.
+        """
+        cap = self.config.run.max_runtime_seconds
+        if cap <= 0 or self._start_time is None:
+            return False
+
+        elapsed = (datetime.now(UTC) - self._start_time).total_seconds()
+        if elapsed >= cap:
+            logger.warning(
+                f"Time cap reached: elapsed {elapsed:,.0f}s >= cap {cap:,.0f}s. "
+                f"Stopping run."
+            )
+            if self.verbose:
+                print(
+                    f"\n[coral] Time cap reached: elapsed {elapsed:,.0f}s >= "
+                    f"cap {cap:,.0f}s. Stopping all agents."
+                )
+            return True
+        return False
+
     def _get_eval_count(self) -> int:
         """Read the current eval count from .coral/eval_count."""
         assert self.paths is not None
@@ -748,9 +804,29 @@ class AgentManager:
 
         seen_attempts = self._get_seen_attempts()
 
+        # A budget can only be enforced when the gateway is logging cost.
+        if self.config.run.budget > 0 and not self.config.agents.gateway.enabled:
+            logger.warning(
+                "run.budget is set but the gateway is disabled "
+                "(agents.gateway.enabled=false); cost cannot be tracked and "
+                "the budget will NOT be enforced."
+            )
+            if self.verbose:
+                print(
+                    "[coral] Warning: run.budget set but gateway disabled; "
+                    "budget will NOT be enforced."
+                )
+
         logger.info(f"Monitoring {len(self.handles)} agent(s) (check every {check_interval}s)...")
 
         while self._running:
+            # Terminate the run if the cost budget or time cap has been reached.
+            # Checked before processing this iteration so no further agent work
+            # starts.
+            if self._budget_exceeded() or self._runtime_exceeded():
+                self.stop_all()
+                break
+
             # Check for new attempts
             current_attempts = self._get_seen_attempts()
             new_attempts = current_attempts - seen_attempts

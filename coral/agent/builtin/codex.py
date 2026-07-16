@@ -24,10 +24,14 @@ _CODEX_RUNTIME_OPTION_KEYS = {
 
 
 def _extract_codex_session_id(log_path: Path) -> str | None:
-    """Extract session_id from a Codex JSONL log.
+    """Extract the session/thread id from a Codex JSONL log.
 
-    Codex exec --json emits JSONL events. Session IDs appear in events
-    with a "session_id" field, typically in the final summary event.
+    Codex exec --json emits JSONL events. The identifier accepted by
+    `codex exec resume <id>` has moved across CLI versions: older builds
+    emitted a "session_id" field, while newer ones (>= 0.138) emit a
+    "thread_id" on the `thread.started` event and no longer include
+    "session_id" at all. Accept either so resume keeps working across
+    versions.
     """
     try:
         lines = log_path.read_text().strip().splitlines()
@@ -37,13 +41,13 @@ def _extract_codex_session_id(log_path: Path) -> str | None:
                 continue
             try:
                 data = json.loads(line)
-                sid = data.get("session_id")
+                sid = data.get("session_id") or data.get("thread_id")
                 if sid:
                     return sid
             except json.JSONDecodeError:
                 continue
     except Exception as e:
-        logger.debug(f"Failed to extract session_id from {log_path}: {e}")
+        logger.debug(f"Failed to extract session id from {log_path}: {e}")
     return None
 
 
@@ -128,6 +132,11 @@ class CodexRuntime:
         logger.info(f"Command: {' '.join(cmd)}")
 
         agent_env = _clean_env()
+        # Point CODEX_HOME at the worktree's .codex so the generated config.toml
+        # is read as the trusted user-level config. Otherwise codex treats it as
+        # an untrusted project-local config and silently ignores security-sensitive
+        # keys like model_provider/model_providers, breaking gateway routing.
+        agent_env["CODEX_HOME"] = str(worktree_path / ".codex")
         worktree_venv = str(worktree_path / ".venv")
         agent_env["UV_PROJECT_ENVIRONMENT"] = worktree_venv
         # Set VIRTUAL_ENV so login shells (which reset PATH) can restore it

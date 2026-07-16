@@ -393,6 +393,10 @@ def cmd_start(args: argparse.Namespace) -> None:
         print(f"[coral] Max turns:  {config.agents.max_turns}")
         print(f"[coral] Results:    {config.workspace.results_dir}")
         print(f"[coral] Repo path:  {config.workspace.repo_path}")
+        if config.run.budget > 0:
+            print(f"[coral] Budget:     ${config.run.budget:,.2f}")
+        if config.run.max_runtime_seconds > 0:
+            print(f"[coral] Time cap:   {config.run.max_runtime_seconds:,.0f}s")
         if config.agents.warmstart.enabled:
             print("[coral] Warm-start: enabled")
         print()

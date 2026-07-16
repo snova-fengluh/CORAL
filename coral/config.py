@@ -122,6 +122,8 @@ class RunConfig:
     ui: bool = False
     session: str = "tmux"  # "local", "tmux", or "docker"
     docker_image: str = ""  # empty = auto-build from project Dockerfile
+    budget: float = 0.0  # USD cost cap for the run; 0 = no limit. Requires the gateway.
+    max_runtime_seconds: float = 0.0  # wall-clock cap for the run in seconds; 0 = no limit.
 
 
 @dataclass

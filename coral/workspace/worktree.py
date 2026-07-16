@@ -331,7 +331,7 @@ def setup_codex_settings(
     codex_dir = worktree_path / ".codex"
     codex_dir.mkdir(exist_ok=True)
 
-    web_search = "live" if research else "disabled"
+    web_search = "true" if research else "false"
 
     lines = [
         'model = "gpt-5.4"',
@@ -352,7 +352,7 @@ def setup_codex_settings(
 
     lines += [
         '\n[tools]',
-        f'web_search = "{web_search}"',
+        f'web_search = {web_search}',
     ]
 
     config_toml = "\n".join(lines) + "\n"

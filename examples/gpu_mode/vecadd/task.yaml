@@ -17,9 +17,9 @@ task:
 
   tips: |
     - Eval timeout is 600s.
-    - Local mode requires CUDA + Triton. Mac users: set environment variables
-        GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H100
-      to run the eval on Modal cloud GPUs (Modal credentials required).
+    - The eval backend is fixed by the task config (grader.args below), so you do
+      NOT need to set any GPUMODE_* environment variables — they have no effect on
+      `coral eval`. Just write the kernel.
     - Output dtype MUST be float16. Output shape must match input shape.
     - Consider: BLOCK_SIZE tuning, @triton.autotune, vectorized loads, grid sizing
       for occupancy, memory coalescing on contiguous data.
@@ -28,16 +28,24 @@ grader:
   entrypoint: "vecadd_grader.grader:Grader"
   setup:
     # Add `[gpu]` if running locally on a CUDA box; add `[modal]` if using Modal cloud.
-    - "uv pip install -e ./grader"
+    - "uv pip install -e ./grader[modal]"
   timeout: 600
   direction: maximize
   args:
     program_file: "initial_program.py"
+    # Backend selection. Modal runs the eval on a cloud GPU (requires Modal
+    # credentials + the `[modal]` extra above); set use_modal: false to grade on
+    # a local CUDA box instead. This is read by the grader worker directly, so it
+    # works regardless of the host CORAL runs on (e.g. a Mac without CUDA).
+    use_modal: true
+    modal_gpu: "H100"
 
 agents:
-  count: 1
-  runtime: claude_code
-  model: claude-sonnet-4-6
+  count: 2
+  runtime: codex
+  model: gpt-5.5
+  runtime_options:
+    model_reasoning_effort: high
   gateway:
     enabled: true
     port: 4000  # to be consistent with ./seed/opencode.json

@@ -185,7 +185,8 @@ def _bench_single(kernel_fn, bench_args, max_time_ns=None):
 # ---------------------------------------------------------------------------
 
 
-def _evaluate_modal(submission_code):
+def _evaluate_modal(submission_code, modal_gpu=None):
+    modal_gpu = modal_gpu or MODAL_GPU
     parent_dir = os.path.dirname(os.path.abspath(__file__))
     if parent_dir not in sys.path:
         sys.path.insert(0, parent_dir)
@@ -201,7 +202,7 @@ def _evaluate_modal(submission_code):
         "T4": eval_triton_t4,
         "H200": eval_triton_h200,
     }
-    eval_fn = gpu_fns.get(MODAL_GPU, eval_triton_h100)
+    eval_fn = gpu_fns.get(modal_gpu, eval_triton_h100)
 
     ref_code = getattr(reference, 'MODAL_REFERENCE_CODE', None)
     if ref_code is None:
@@ -240,7 +241,7 @@ def _evaluate_modal(submission_code):
         if "bench_means_us" in result:
             for i, us in enumerate(result["bench_means_us"]):
                 artifacts[f"bench_{i}_mean_us"] = f"{us:.2f}"
-        artifacts["hardware"] = MODAL_GPU
+        artifacts["hardware"] = modal_gpu
         return EvaluationResult(metrics=metrics, artifacts=artifacts)
 
     return EvaluationResult(
@@ -342,7 +343,16 @@ def _evaluate_local(program_path):
 # ---------------------------------------------------------------------------
 
 
-def evaluate(program_path):
+def evaluate(program_path, use_modal=None, modal_gpu=None):
+    """Evaluate a submission.
+
+    ``use_modal``/``modal_gpu`` let the caller (e.g. the CORAL grader, via
+    ``task.yaml``'s ``grader.args``) pin the execution backend explicitly.
+    When left as ``None`` they fall back to the ``GPUMODE_USE_MODAL`` /
+    ``GPUMODE_MODAL_GPU`` environment variables read at import time.
+    """
+    use_modal = USE_MODAL if use_modal is None else use_modal
+
     try:
         with open(program_path, "r") as f:
             code = f.read()
@@ -352,9 +362,9 @@ def evaluate(program_path):
             artifacts={"error": f"Failed to read file: {exc}", "failure_stage": "file_read"},
         )
 
-    if USE_MODAL:
+    if use_modal:
         try:
-            return _evaluate_modal(code)
+            return _evaluate_modal(code, modal_gpu=modal_gpu)
         except Exception as exc:
             return EvaluationResult(
                 metrics={"combined_score": 0.0, "correctness": 0.0},

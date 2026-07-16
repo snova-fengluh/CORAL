@@ -136,13 +136,11 @@ grader:
 agents:
   count: 1
   runtime: claude_code
-  model: opus
-  max_turns: 200
-  heartbeat:
-    - name: reflect
-      every: 1
-    - name: consolidate
-      every: 10
+  model: claude-sonnet-4-6
+  gateway:
+    enabled: true
+    port: 4000  # to be consistent with ./seed/opencode.json
+    config: "./litellm_config.yaml"
 
 workspace:
   results_dir: "./results"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -13,10 +14,41 @@ from typing import Any
 from coral.cli._helpers import find_coral_dir
 
 # Default per-million-token prices in USD. Override with --pricing PATH.
-# Keys match the `model` field as logged by the gateway. Substring fallback
-# is also tried (e.g. a logged "claude-sonnet-4-6-20250101" matches
-# "claude-sonnet-4-6").
+# Keys match the `model` field as logged by the gateway. Matching is exact,
+# with one fallback: a trailing dated-snapshot suffix is stripped (e.g. a
+# logged "claude-haiku-4-5-20251001" matches "claude-haiku-4-5"). Substring
+# matching is intentionally NOT used, so "claude-opus-4-8" never resolves to
+# the shorter "claude-opus-4" key (which would misprice it at the retired
+# Opus 4.0 rate).
 DEFAULT_PRICING: dict[str, dict[str, float]] = {
+    # Claude Fable 5 / Mythos 5 (same price; Mythos is Project Glasswing only).
+    "claude-fable-5": {
+        "input": 10.0,
+        "output": 50.0,
+        "cache_read": 1.0,
+        "cache_write": 12.5,
+    },
+    "claude-mythos-5": {
+        "input": 10.0,
+        "output": 50.0,
+        "cache_read": 1.0,
+        "cache_write": 12.5,
+    },
+    "claude-opus-4-8": {
+        "input": 5.0,
+        "output": 25.0,
+        "cache_read": 0.5,
+        "cache_write": 6.25,
+    },
+    # Sonnet 5 lists a $2/$10 intro rate through 2026-08-31; we use the
+    # standard $3/$15 to match the other Sonnet rows and stay correct after
+    # the intro window closes.
+    "claude-sonnet-5": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_read": 0.3,
+        "cache_write": 3.75,
+    },
     "claude-opus-4-7": {
         "input": 5.0,
         "output": 25.0,
@@ -64,6 +96,82 @@ DEFAULT_PRICING: dict[str, dict[str, float]] = {
         "output": 5.0,
         "cache_read": 0.1,
         "cache_write": 1.25,
+    },
+    # OpenAI models. Prices verified against the OpenAI API pricing page
+    # (developers.openai.com/api/docs/pricing, July 2026). OpenAI has no
+    # separate cache-write charge — cache reads are billed at a discounted
+    # input rate and cache_write is always 0.
+    "gpt-5.5": {
+        "input": 5.0,
+        "output": 30.0,
+        "cache_read": 0.5,
+        "cache_write": 0.0,
+    },
+    "gpt-5.4-nano": {
+        "input": 0.2,
+        "output": 1.25,
+        "cache_read": 0.02,
+        "cache_write": 0.0,
+    },
+    "gpt-5.4-mini": {
+        "input": 0.75,
+        "output": 4.5,
+        "cache_read": 0.075,
+        "cache_write": 0.0,
+    },
+    "gpt-5.4": {
+        "input": 2.5,
+        "output": 15.0,
+        "cache_read": 0.25,
+        "cache_write": 0.0,
+    },
+    "gpt-5-nano": {
+        "input": 0.05,
+        "output": 0.4,
+        "cache_read": 0.005,
+        "cache_write": 0.0,
+    },
+    "gpt-5-mini": {
+        "input": 0.25,
+        "output": 2.0,
+        "cache_read": 0.025,
+        "cache_write": 0.0,
+    },
+    "gpt-5": {
+        "input": 1.25,
+        "output": 10.0,
+        "cache_read": 0.125,
+        "cache_write": 0.0,
+    },
+    "o4-mini": {
+        "input": 1.1,
+        "output": 4.4,
+        "cache_read": 0.275,
+        "cache_write": 0.0,
+    },
+    "o3": {
+        "input": 2.0,
+        "output": 8.0,
+        "cache_read": 0.5,
+        "cache_write": 0.0,
+    },
+    "gpt-4.1-mini": {
+        "input": 0.4,
+        "output": 1.6,
+        "cache_read": 0.1,
+        "cache_write": 0.0,
+    },
+    "gpt-4.1": {
+        "input": 2.0,
+        "output": 8.0,
+        "cache_read": 0.5,
+        "cache_write": 0.0,
+    },
+    "gpt-4o": {
+        "input": 2.5,
+        "output": 10.0,
+        "cache_read": 1.25,
+        "cache_write": 0.0,
     },
 }
 
@@ -129,31 +237,35 @@ def _extract_usage(entry: dict[str, Any]) -> Usage | None:
 
 
 def _usage_from_dict(u: dict[str, Any]) -> Usage:
-    """Build a Usage from a parsed usage dict (Anthropic or OpenAI shape)."""
-    # Anthropic shape: input_tokens, output_tokens, cache_read_input_tokens,
-    #                  cache_creation_input_tokens
-    # OpenAI shape:    prompt_tokens, completion_tokens (+ cache subfields)
-    input_tokens = int(
-        u.get("input_tokens")
-        or u.get("prompt_tokens")
-        or 0
-    )
-    output_tokens = int(
-        u.get("output_tokens")
-        or u.get("completion_tokens")
-        or 0
-    )
-    cache_read = int(
-        u.get("cache_read_input_tokens")
-        or (u.get("prompt_tokens_details") or {}).get("cached_tokens")
-        or 0
-    )
-    cache_write = int(u.get("cache_creation_input_tokens") or 0)
+    """Build a Usage from a parsed usage dict (Anthropic or OpenAI shape).
+
+    The two providers report cached tokens differently, which matters for
+    cost: Anthropic's `input_tokens` *excludes* cache read/write tokens (they
+    are billed separately), whereas OpenAI's `prompt_tokens` *includes* the
+    cached tokens. We normalize both to the Anthropic convention — `input_tokens`
+    holds only uncached input — so cached tokens are never charged twice.
+    """
+    if "input_tokens" in u or "output_tokens" in u:
+        # Anthropic shape: input_tokens, output_tokens, cache_read_input_tokens,
+        #                  cache_creation_input_tokens
+        return Usage(
+            input_tokens=int(u.get("input_tokens") or 0),
+            output_tokens=int(u.get("output_tokens") or 0),
+            cache_read_tokens=int(u.get("cache_read_input_tokens") or 0),
+            cache_write_tokens=int(u.get("cache_creation_input_tokens") or 0),
+            requests=1,
+        )
+
+    # OpenAI shape: prompt_tokens (cached-inclusive), completion_tokens,
+    #               prompt_tokens_details.cached_tokens. OpenAI has no separate
+    #               cache-creation charge.
+    prompt_tokens = int(u.get("prompt_tokens") or 0)
+    cache_read = int((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
     return Usage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        input_tokens=max(prompt_tokens - cache_read, 0),
+        output_tokens=int(u.get("completion_tokens") or 0),
         cache_read_tokens=cache_read,
-        cache_write_tokens=cache_write,
+        cache_write_tokens=0,
         requests=1,
     )
 
@@ -245,16 +357,20 @@ def _resolve_prices(
 ) -> dict[str, float] | None:
     """Pick the price row for a logged model name.
 
-    Tries exact match, then a substring match against the configured keys.
-    Returns None if nothing matches (cost will be reported as unknown).
+    Matches the model name exactly, then retries once after stripping a
+    trailing dated-snapshot suffix (e.g. "claude-haiku-4-5-20251001" ->
+    "claude-haiku-4-5"). Returns None if nothing matches (cost is reported as
+    unknown). Substring matching is deliberately avoided: a name is never
+    resolved to a shorter key it merely contains, which would otherwise
+    misprice e.g. "claude-opus-4-8" against "claude-opus-4".
     """
     if not model:
         return None
     if model in pricing:
         return pricing[model]
-    for key, prices in pricing.items():
-        if key in model or model in key:
-            return prices
+    base = re.sub(r"-\d{8}$", "", model)
+    if base != model and base in pricing:
+        return pricing[base]
     return None
 
 
@@ -388,6 +504,42 @@ def cmd_cost(args: argparse.Namespace) -> None:
             + ". Pass --pricing prices.yaml to add rates "
             "(per-million-token: input, output, cache_read, cache_write)."
         )
+
+
+def compute_run_cost(coral_dir: Path, pricing_arg: str | None = None) -> float | None:
+    """Compute total estimated USD cost for a run from its gateway log.
+
+    Reuses the same parsing and aggregation logic as `coral cost` so numbers
+    stay consistent. Returns None when there is no gateway log, no parseable
+    usage, or no priced models (i.e. cost is unknown / can't be enforced).
+    """
+    log_path = coral_dir / "public" / "gateway" / "requests.jsonl"
+    if not log_path.exists():
+        return None
+
+    pricing = _load_pricing(pricing_arg)
+    by_model: dict[str, ModelStats] = defaultdict(ModelStats)
+    parsed = 0
+
+    with open(log_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            usage = _extract_usage(entry)
+            if usage is None:
+                continue
+            parsed += 1
+            model = entry.get("model") or "unknown"
+            by_model[model].usage.add(usage)
+
+    if parsed == 0:
+        return None
+    return _aggregate_cost(by_model, pricing)
 
 
 def _aggregate_cost(

@@ -22,8 +22,9 @@ task:
 
   tips: |
     - Eval timeout is 600s.
-    - Local mode requires CUDA + Triton; otherwise:
-        GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H100
+    - The eval backend is fixed by the task config (grader.args below), so you
+      do NOT need to set any GPUMODE_* environment variables — they have no
+      effect on `coral eval`. Just write the kernel.
     - The reference computes the einsum '...ikd,...jkd->...ijd' in bfloat16
       internally — you have some numerical slack (rtol/atol=2e-2).
     - The TriMul module is large; fusing LayerNorm/projection/gate steps and
@@ -32,16 +33,24 @@ task:
 grader:
   entrypoint: "trimul_grader.grader:Grader"
   setup:
-    - "uv pip install -e ./grader"
+    - "uv pip install -e ./grader[modal]"
   timeout: 600
   direction: maximize
   args:
     program_file: "initial_program.py"
+    # Backend selection, read by the grader worker directly (works even when the
+    # host CORAL runs on has no CUDA, e.g. a Mac). Modal runs the eval on a cloud
+    # GPU (needs Modal credentials + the `[modal]` extra above); set
+    # use_modal: false to grade on a local CUDA box instead.
+    use_modal: true
+    modal_gpu: "H100"
 
 agents:
-  count: 1
-  runtime: claude_code
-  model: claude-sonnet-4-6
+  count: 2
+  runtime: codex
+  model: gpt-5.5
+  runtime_options:
+    model_reasoning_effort: high
   gateway:
     enabled: true
     port: 4000  # to be consistent with ./seed/opencode.json

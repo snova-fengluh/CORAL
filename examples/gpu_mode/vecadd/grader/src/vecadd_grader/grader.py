@@ -6,8 +6,14 @@ and maps its EvaluationResult to a CORAL ScoreBundle.
 The agent's program (default: initial_program.py) must define `custom_kernel(data)`.
 Correctness + benchmark logic lives in shared_eval.py (local GPU and Modal paths).
 
-Local mode requires CUDA. To run on cloud GPU instead, set
-    GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H100   (or H200 for mla_decode)
+Backend selection (in priority order):
+  1. ``grader.args.use_modal`` / ``grader.args.modal_gpu`` in task.yaml
+  2. ``GPUMODE_USE_MODAL`` / ``GPUMODE_MODAL_GPU`` environment variables
+  3. local CUDA execution
+
+Pin Modal in task.yaml so the choice is config-driven and reaches the grader
+worker subprocess reliably (env vars set on `coral eval` do NOT — grading runs
+in the daemon's process, not the agent's).
 """
 
 from __future__ import annotations
@@ -21,6 +27,15 @@ from coral.types import ScoreBundle
 from . import shared_eval
 
 
+def _as_bool(value):
+    """Coerce a YAML/env value to bool, or None if unset."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 class Grader(TaskGrader):
     def evaluate(self) -> ScoreBundle:
         program_file = self.args.get("program_file", "initial_program.py")
@@ -29,8 +44,11 @@ class Grader(TaskGrader):
         if not os.path.exists(program_path):
             return self.fail(f"Program file not found: {program_file}")
 
+        use_modal = _as_bool(self.args.get("use_modal"))
+        modal_gpu = self.args.get("modal_gpu")
+
         try:
-            result = shared_eval.evaluate(program_path)
+            result = shared_eval.evaluate(program_path, use_modal=use_modal, modal_gpu=modal_gpu)
         except Exception as e:
             return self.fail(f"Evaluation crashed: {e}\n{traceback.format_exc()[-1500:]}")
 

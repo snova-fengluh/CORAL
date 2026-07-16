@@ -40,8 +40,10 @@ grader:
 
 agents:
   count: 1
-  runtime: opencode
-  model: claude/claude-opus-4-6  # to be consistent with ./seed/opencode.json
+  runtime: codex
+  model: gpt-5.4
+  runtime_options:
+    model_reasoning_effort: medium
   gateway:
     enabled: true
     port: 4000  # to be consistent with ./seed/opencode.json

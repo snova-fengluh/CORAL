@@ -24,9 +24,10 @@ task:
 
   tips: |
     - Eval timeout is 600s.
-    - This benchmark needs an H200 (141 GB) — H100 (80 GB) doesn't fit. Use:
-        GPUMODE_USE_MODAL=true GPUMODE_MODAL_GPU=H200
-      for cloud GPU evaluation.
+    - This benchmark needs an H200 (141 GB) — H100 (80 GB) doesn't fit. The
+      backend is pinned to Modal H200 in grader.args below; you do NOT need to
+      set any GPUMODE_* environment variables (they have no effect on `coral
+      eval`). Just write the kernel.
     - The shared eval uses wall-clock timing + torch.no_grad() + 1% rel error
       (different from the other GPU Mode tasks).
     - Big wins typically come from fusing softmax + matmul + RoPE rather than
@@ -35,16 +36,24 @@ task:
 grader:
   entrypoint: "mla_decode_grader.grader:Grader"
   setup:
-    - "uv pip install -e ./grader"
+    - "uv pip install -e ./grader[modal]"
   timeout: 600
   direction: maximize
   args:
     program_file: "initial_program.py"
+    # Backend selection, read by the grader worker directly (works even when the
+    # host CORAL runs on has no CUDA, e.g. a Mac). Modal runs the eval on a cloud
+    # GPU (needs Modal credentials + the `[modal]` extra above); set
+    # use_modal: false to grade on a local CUDA box instead.
+    use_modal: true
+    modal_gpu: "H200"
 
 agents:
-  count: 1
-  runtime: claude_code
-  model: claude-sonnet-4-6
+  count: 2
+  runtime: codex
+  model: gpt-5.5
+  runtime_options:
+    model_reasoning_effort: high
   gateway:
     enabled: true
     port: 4000  # to be consistent with ./seed/opencode.json

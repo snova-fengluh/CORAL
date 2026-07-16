@@ -36,9 +36,15 @@ grader:
     program_file: "initial_program.py"
 
 agents:
-  count: 2
-  runtime: claude_code
-  model: claude-sonnet-4-6
+  count: 1
+  runtime: codex
+  model: gpt-5.4
+  runtime_options:
+    model_reasoning_effort: medium
+  gateway:
+    enabled: true
+    port: 4000  # to be consistent with ./seed/opencode.json
+    config: "./litellm_config.yaml"
 
 workspace:
   results_dir: "./results"

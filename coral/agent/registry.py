@@ -5,6 +5,7 @@ from __future__ import annotations
 from coral.agent.builtin.claude_code import ClaudeCodeRuntime
 from coral.agent.builtin.codex import CodexRuntime
 from coral.agent.builtin.kiro import KiroRuntime
+from coral.agent.builtin.llm_agent import LLMAgentRuntime
 from coral.agent.builtin.opencode import OpenCodeRuntime
 from coral.agent.runtime import AgentRuntime
 
@@ -13,6 +14,7 @@ _RUNTIMES: dict[str, type] = {
     "codex": CodexRuntime,
     "kiro": KiroRuntime,
     "opencode": OpenCodeRuntime,
+    "llm_agent": LLMAgentRuntime,
 }
 
 # Convenience aliases
@@ -23,14 +25,19 @@ _ALIASES: dict[str, str] = {
     "openai-codex": "codex",
     "open-code": "opencode",
     "kiro-cli": "kiro",
+    "llm": "llm_agent",
+    "llm-agent": "llm_agent",
 }
 
-# Default models per runtime (used when user doesn't specify --model)
+# Default models per runtime (used when user doesn't specify --model).
+# llm_agent addresses models by their gateway model_name, so its default must
+# exist in the run's litellm_config.yaml model_list.
 _DEFAULT_MODELS: dict[str, str] = {
     "claude_code": "sonnet",
     "codex": "gpt-5.4",
     "kiro": "auto",
     "opencode": "openai/gpt-5",
+    "llm_agent": "claude-sonnet-4-6",
 }
 
 
