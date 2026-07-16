@@ -56,6 +56,7 @@ Coral works with any coding agent that can run as a subprocess and interact via 
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Anthropic's agentic coding tool — the default and most tested runtime |
 | [**Codex**](https://github.com/openai/codex) | OpenAI's open-source coding agent |
 | [**OpenCode**](https://github.com/opencode-ai/opencode) | Open-source terminal-based AI coding agent |
+| **LLM Agent** (`llm_agent`) | CORAL's own in-process tool-use agent — a plain LLM with just `read_file`/`write_file`, no external CLI required. See [Using the LLM Agent Runtime](#using-the-llm-agent-runtime) |
 
 > [!TIP]
 > Before using Coral, make sure you have fully set up the agent(s) you plan to use:
@@ -70,7 +71,7 @@ Set the agent in your task config (refer to <a href="#3-configure-the-task">Conf
 
 ```yaml
 agents:
-  runtime: claude_code   # or "codex" or "opencode"
+  runtime: claude_code   # or "codex", "opencode", "llm_agent"
   count: 3  # how many agents you want to spawn. Beware of your budget :)
   model: opus   # name of the model you wish to use
 ```
@@ -91,6 +92,10 @@ uv run coral start -c task.yaml run.session=docker        # run inside Docker co
 # warm-start: research phase before coding (agents do literature review first)
 uv run coral start -c task.yaml agents.warmstart.enabled=true agents.research=true
 
+# cap a run by cost (USD) or wall-clock time — agents stop automatically when reached
+uv run coral start -c task.yaml run.budget=50               # stop after ~$50 spent (needs the gateway)
+uv run coral start -c task.yaml run.max_runtime_seconds=3600 # stop after 1 hour
+
 # stop and resume
 uv run coral stop                                        # stop anytime
 uv run coral resume                                      # pick up where you left off
@@ -98,6 +103,7 @@ uv run coral resume agents.model=opus run.verbose=true   # resume with overrides
 
 # monitor progress
 uv run coral ui                                          # open the web dashboard
+uv run coral cost                                        # token usage + estimated $ for the run
 ```
 
 ### How It Works
@@ -244,6 +250,7 @@ uv run coral stop        # Stop all agents
 | `uv run coral notes`                 | Browse shared notes                 |
 | `uv run coral skills`                | Browse shared skills                |
 | `uv run coral runs`                  | List all runs                       |
+| `uv run coral cost`                  | Token usage + estimated $ (needs the gateway; `--by-agent`, `--pricing`, `--json`) |
 | `uv run coral ui`                    | Web dashboard                       |
 | `uv run coral eval -m "description"` | Stage, commit, evaluate (agent use) |
 | `uv run coral diff`                  | Show uncommitted changes            |
@@ -264,8 +271,9 @@ coral/
 ├── types.py             # Task, Score, ScoreBundle, Attempt
 ├── config.py            # YAML-based CoralConfig
 ├── agent/
-│   ├── manager.py       # Multi-agent lifecycle
-│   └── runtime.py       # Claude Code / Codex / OpenCode subprocess
+│   ├── manager.py       # Multi-agent lifecycle (+ cost/time budget enforcement)
+│   ├── runtime.py       # Claude Code / Codex / OpenCode subprocess
+│   └── llm_loop.py      # In-process LLM tool-use agent (the llm_agent runtime)
 ├── workspace/
 │   └── setup.py         # Worktree creation, hooks, symlinks
 ├── grader/
@@ -387,6 +395,75 @@ agents:
 When you run `coral start`, the gateway starts before agents are spawned, and all agent API requests are routed through it. The gateway automatically assigns each agent a unique proxy key for per-agent request tracking.
 
 See `examples/circle_packing/` for a complete working example using OpenCode with the gateway.
+
+### Cost & Time Budgets
+
+Long-running swarms can burn through API credits fast. CORAL can cap a run by **cost** or **wall-clock time** and stop all agents automatically once the limit is reached.
+
+```yaml
+run:
+  budget: 50.0               # USD cost cap for the run; 0 = no limit (the default)
+  max_runtime_seconds: 3600  # wall-clock cap in seconds; 0 = no limit (the default)
+```
+
+Or set them inline via the dotlist:
+
+```bash
+uv run coral start -c task.yaml run.budget=50 run.max_runtime_seconds=3600
+```
+
+How it works:
+
+- The manager checks both limits on every monitoring cycle. When either is hit, it logs the reason, stops every agent, and ends the run — no new agent work starts after the limit is crossed.
+- **`run.budget` requires the gateway** (`agents.gateway.enabled=true`): cost is read from the gateway request log using the same accounting as `coral cost`. If the budget is set but the gateway is off, CORAL warns and does **not** enforce it (cost can't be tracked).
+- **`run.max_runtime_seconds`** measures elapsed time since the current session started. The clock restarts on `coral resume`, so the cap applies **per session**, not cumulatively across resumes.
+
+#### Inspecting cost after (or during) a run
+
+```bash
+uv run coral cost                       # per-model token usage + estimated $ for the latest run
+uv run coral cost --by-agent            # break usage down by agent within each model
+uv run coral cost --json                # machine-readable output
+uv run coral cost --pricing prices.yaml # override / extend the built-in price table
+```
+
+`coral cost` reads `.coral/public/gateway/requests.jsonl` (so it also **requires the gateway**), sums input / output / cache-read / cache-write tokens per model and per agent, and applies a pricing table to estimate USD. Built-in rates cover common Claude and OpenAI models; model names are matched exactly (a trailing dated snapshot like `-20251001` is stripped as a fallback). To price a model that isn't built in, pass a `--pricing` YAML file mapping model name → per-million-token rates:
+
+```yaml
+# prices.yaml
+my-custom-model:
+  input: 5.0
+  output: 25.0
+  cache_read: 0.5
+  cache_write: 6.25
+```
+
+### Using the LLM Agent Runtime
+
+Besides the external CLI coding agents (Claude Code / Codex / OpenCode), CORAL ships its own lightweight, in-process **LLM tool-use agent** (`llm_agent`). Instead of driving a full coding CLI, it runs a plain tool-calling loop where the model has exactly two tools — `read_file` and `write_file` — and never runs the evaluation itself. After each edit turn, CORAL's harness commits the changes, runs the grader, and feeds the score and feedback back as context for the next round. This makes it an apples-to-apples benchmark for `aes`-style agents and a minimal-dependency alternative when you don't want to install an external agent CLI.
+
+Enable it in your task config:
+
+```yaml
+agents:
+  runtime: llm_agent          # aliases: "llm", "llm-agent"
+  count: 3
+  model: claude-sonnet-4-6    # must match a model_name in your litellm_config.yaml
+  runtime_options:
+    max_tokens: 16384         # max output tokens per model call (default 16384)
+    max_tool_iters: 60        # max read/write tool calls per edit turn (default 60)
+  gateway:
+    enabled: true             # strongly recommended — see below
+    port: 4000
+    config: "./litellm_config.yaml"
+```
+
+Key points:
+
+- **Addresses models by gateway `model_name`.** The loop talks to the OpenAI-compatible gateway endpoint, so `model` must be a `model_name` defined in your `litellm_config.yaml` (works for both Anthropic- and OpenAI-backed models). The default is `claude-sonnet-4-6`. Without a gateway it falls back to the standard `OpenAI()` environment (only useful for OpenAI models / local testing).
+- **Automatic cost tracking.** Because calls go through the gateway, usage lands in `.coral/public/gateway/` and shows up in `coral cost` and under `run.budget` exactly like the CLI runtimes.
+- **Stateless worker, persistent memory.** Each iteration starts from a fresh message history; continuity comes from CORAL's shared attempts leaderboard, which the loop reloads on startup — so the process is safe to kill and restart at any point (no session resume needed).
+- **No shell, no web search.** Its entire capability is `read_file` / `write_file`. It cannot run commands or browse; the grader runs the code independently.
 
 ### Examples
 

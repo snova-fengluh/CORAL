@@ -57,6 +57,7 @@ CORAL 支持任何可以作为子进程运行并通过终端交互的编程 Agen
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Anthropic 的 Agentic 编程工具——默认且测试最充分的运行时 |
 | [**Codex**](https://github.com/openai/codex) | OpenAI 的开源编程 Agent |
 | [**OpenCode**](https://github.com/opencode-ai/opencode) | 开源终端 AI 编程 Agent |
+| **LLM Agent**（`llm_agent`） | CORAL 自带的进程内工具调用 Agent —— 仅有 `read_file`/`write_file` 两个工具的纯 LLM，无需外部 CLI。详见 [使用 LLM Agent 运行时](#使用-llm-agent-运行时) |
 
 > [!TIP]
 > 在使用 CORAL 之前，请确保已完整配置好你计划使用的 Agent：
@@ -71,7 +72,7 @@ CORAL 支持任何可以作为子进程运行并通过终端交互的编程 Agen
 
 ```yaml
 agents:
-  runtime: claude_code   # 或 "codex" 或 "opencode"
+  runtime: claude_code   # 或 "codex"、"opencode"、"llm_agent"
   count: 3
   model: opus  
 
@@ -83,12 +84,17 @@ agents:
 # 启动
 uv run coral start --config examples/kernel_builder/task.yaml
 
+# 按花费（美元）或墙钟时间给一次运行设上限——达到后所有 Agent 自动停止
+uv run coral start -c task.yaml run.budget=50               # 花费约 $50 后停止（需开启 gateway）
+uv run coral start -c task.yaml run.max_runtime_seconds=3600 # 运行 1 小时后停止
+
 # 停止和恢复
 uv run coral stop                                      # 暂停
 uv run coral resume                                    # 继续
 
 # 监控进度
 uv run coral ui                                        # 打开 Web 看板
+uv run coral cost                                      # 查看本次运行的 token 用量 + 预估花费
 ```
 
 ### 工作原理
@@ -228,6 +234,7 @@ uv run coral stop        # 收工
 | `uv run coral notes` | 浏览笔记 |
 | `uv run coral skills` | 浏览技能 |
 | `uv run coral runs` | 列出所有运行 |
+| `uv run coral cost` | Token 用量 + 预估花费（需 gateway；支持 `--by-agent`、`--pricing`、`--json`）|
 | `uv run coral ui` | Web 看板 |
 | `uv run coral eval -m "描述"` | 暂存 + 提交 + 评估（Agent 调用）|
 | `uv run coral diff` | 看未提交的改动 |
@@ -244,8 +251,9 @@ coral/
 ├── types.py             # Task, Score, ScoreBundle, Attempt
 ├── config.py            # YAML 配置加载
 ├── agent/
-│   ├── manager.py       # 多 Agent 生命周期
-│   └── runtime.py       # Claude Code / Codex / OpenCode 子进程
+│   ├── manager.py       # 多 Agent 生命周期（含花费/时间预算控制）
+│   ├── runtime.py       # Claude Code / Codex / OpenCode 子进程
+│   └── llm_loop.py      # 进程内 LLM 工具调用 Agent（llm_agent 运行时）
 ├── workspace/
 │   └── setup.py         # Worktree 创建、hook、软链
 ├── grader/
@@ -267,6 +275,75 @@ coral/
 └── cli/                 # 5 个模块，17 条命令
 ```
 
+
+### 花费与时间预算
+
+长时间运行的 Agent 群组会很快烧掉 API 额度。CORAL 支持按**花费**或**墙钟时间**给一次运行设上限，达到后自动停止所有 Agent。
+
+```yaml
+run:
+  budget: 50.0               # 本次运行的花费上限（美元）；0 = 不限制（默认）
+  max_runtime_seconds: 3600  # 墙钟时间上限（秒）；0 = 不限制（默认）
+```
+
+也可以直接在命令行用 dotlist 覆盖：
+
+```bash
+uv run coral start -c task.yaml run.budget=50 run.max_runtime_seconds=3600
+```
+
+工作原理：
+
+- 后台管理器在每个监控周期都会检查这两个上限。一旦任一被触发，就记录原因、停止所有 Agent 并结束运行——越界之后不再启动新的 Agent 工作。
+- **`run.budget` 需要开启 gateway**（`agents.gateway.enabled=true`）：花费从 gateway 请求日志中读取，与 `coral cost` 使用完全相同的核算逻辑。如果设置了预算但 gateway 未开启，CORAL 会告警并**不做**任何限制（因为无法追踪花费）。
+- **`run.max_runtime_seconds`** 计算的是自当前会话启动以来的耗时。`coral resume` 会重置计时，因此该上限是**按会话**生效的，不会跨多次 resume 累加。
+
+#### 运行后（或运行中）查看花费
+
+```bash
+uv run coral cost                       # 最近一次运行的按模型 token 用量 + 预估花费
+uv run coral cost --by-agent            # 在每个模型内按 Agent 细分用量
+uv run coral cost --json                # 机器可读输出
+uv run coral cost --pricing prices.yaml # 覆盖 / 扩展内置价格表
+```
+
+`coral cost` 读取 `.coral/public/gateway/requests.jsonl`（因此同样**需要 gateway**），按模型和 Agent 汇总输入 / 输出 / 缓存读 / 缓存写 token，再套用价格表估算美元花费。内置价格覆盖常见的 Claude 与 OpenAI 模型；模型名精确匹配（结尾的日期快照如 `-20251001` 会作为兜底被去掉）。若要为未内置的模型定价，用 `--pricing` 传入一个 YAML 文件，映射「模型名 → 每百万 token 单价」：
+
+```yaml
+# prices.yaml
+my-custom-model:
+  input: 5.0
+  output: 25.0
+  cache_read: 0.5
+  cache_write: 6.25
+```
+
+### 使用 LLM Agent 运行时
+
+除了外部 CLI 编程 Agent（Claude Code / Codex / OpenCode），CORAL 还自带一个轻量的进程内 **LLM 工具调用 Agent**（`llm_agent`）。它不驱动完整的编程 CLI，而是运行一个简单的工具调用循环：模型只有 `read_file` 和 `write_file` 两个工具，且从不自己运行评估。每轮编辑结束后，CORAL 的 harness 会提交改动、运行评分器，并把得分和反馈作为下一轮的上下文喂回去。这让它既能作为 `aes` 类 Agent 的对照基准，也是不想安装外部 Agent CLI 时的极简依赖方案。
+
+在任务配置中启用：
+
+```yaml
+agents:
+  runtime: llm_agent          # 别名："llm"、"llm-agent"
+  count: 3
+  model: claude-sonnet-4-6    # 必须是 litellm_config.yaml 中定义的某个 model_name
+  runtime_options:
+    max_tokens: 16384         # 每次模型调用的最大输出 token（默认 16384）
+    max_tool_iters: 60        # 每轮编辑的最大 read/write 工具调用次数（默认 60）
+  gateway:
+    enabled: true             # 强烈建议开启——见下
+    port: 4000
+    config: "./litellm_config.yaml"
+```
+
+要点：
+
+- **按 gateway 的 `model_name` 寻址模型。** 循环通过 OpenAI 兼容的 gateway 端点通信，因此 `model` 必须是 `litellm_config.yaml` 里定义的某个 `model_name`（Anthropic 与 OpenAI 后端的模型都支持）。默认值为 `claude-sonnet-4-6`。若不开 gateway，则回退到标准的 `OpenAI()` 环境（仅适用于 OpenAI 模型 / 本地测试）。
+- **自动花费追踪。** 由于调用都经过 gateway，用量会落在 `.coral/public/gateway/`，和 CLI 运行时一样出现在 `coral cost` 与 `run.budget` 中。
+- **无状态 worker，持久记忆。** 每轮迭代都从全新的消息历史开始；连续性来自 CORAL 的共享 attempts 排行榜，循环启动时会重新加载——因此进程可以在任意时刻被杀掉并重启（无需 session resume）。
+- **无 shell、无网络搜索。** 它的全部能力就是 `read_file` / `write_file`，不能执行命令或联网；代码由评分器独立运行。
 
 ### 示例
 
